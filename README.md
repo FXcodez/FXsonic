@@ -84,6 +84,14 @@ uv run python build.py
 
 The output is written to `dist/FXsonic/`. The folder contains `FXsonic.exe` and the bundled `bin/fpcalc.exe` binary.
 
+### Packaging a Windows Installer
+
+To bundle the compiled application into a self-contained setup installer (`FXsonic-v0.1.5-Setup.exe`):
+
+```bash
+iscc installer.iss
+```
+
 ---
 
 ## Releases
