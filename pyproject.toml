@@ -1,0 +1,16 @@
+[project]
+name = "fxsonic"
+version = "0.1.5"
+description = "Desktop audio workbench for acoustic fingerprinting, ID3v2.4 tagging, and album artwork retrieval"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27.0",
+    "musicbrainzngs>=0.7.1",
+    "mutagen>=1.47.0",
+    "nicegui>=1.4.0",
+    "pillow>=10.0.0",
+    "pyacoustid>=1.3.0",
+    "pyinstaller>=6.5.0",
+    "pywebview>=5.0.0",
+]

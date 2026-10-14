@@ -1,0 +1,28 @@
+# Bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.installed.cfg
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# PyInstaller build outputs
+build/
+dist/
+*.spec
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Preserve external binaries and visual assets
+!bin/fpcalc.exe
+!icons/
+!assets/
