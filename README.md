@@ -96,7 +96,10 @@ iscc installer.iss
 
 ## Releases
 
-Pre-built portable zip packages are published under [Releases](https://github.com/FXcodez/FXsonic/releases). Download and unpack the archive, then run `FXsonic.exe` directly without installing Python.
+Pre-built packages are published under [Releases](https://github.com/FXcodez/FXsonic/releases):
+
+- **Windows Installer (`FXsonic-v0.1.5-Setup.exe`)**: Recommended for most users. Guided setup wizard with Start Menu integration and a clean uninstaller.
+- **Portable Zip (`FXsonic-v0.1.5-windows-x64.zip`)**: Standalone archive. Download, extract, and run `FXsonic.exe` directly without installation or administrator rights.
 
 ---
 
