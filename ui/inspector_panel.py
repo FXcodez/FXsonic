@@ -266,55 +266,41 @@ class InspectorPanel:
                     ui.icon("play_arrow", size="18px")
                     ui.label("PLAY TRACK")
 
-            # Action button group:
-            # Full-width block: REPLACE ALBUM ART
-            # Below: 2-column grid: REPLACE ART | REMOVE ART (supporting batch multi-selection)
-            with ui.column().classes("w-full gap-2 mt-auto pt-2"):
+            # Album Level Controls (beside the album cover)
+            with ui.column().classes("w-full gap-1.5 mt-auto pt-1"):
+                ui.label("ALBUM CONTROLS").classes(
+                    "font-oswald text-[9px] font-semibold tracking-[0.6px]"
+                ).style("color: var(--fx-text-muted);")
+
                 ui.button(
-                    "REPLACE ALBUM ART",
+                    "EDIT ALBUM DATA",
+                    on_click=self.open_album_editor_dialog,
+                    color=None,
+                ).classes(
+                    "fx-btn-outline w-full px-2 whitespace-nowrap font-oswald text-[10px] font-semibold tracking-[0.5px]"
+                ).style("height: 26px;").tooltip("Batch edit album metadata for tracks in this album")
+
+                ui.button(
+                    "COPY ART TO ALBUM",
+                    on_click=lambda: self.inject_artwork_to_album(track),
+                    color=None,
+                ).classes(
+                    "fx-btn-outline w-full px-2 whitespace-nowrap font-oswald text-[10px] font-semibold tracking-[0.5px]"
+                ).style("height: 26px;").tooltip("Copy the cover art shown above and inject into all tracks in this album")
+
+                ui.button(
+                    "REPLACE ALBUM ART (FILE)",
                     on_click=self.replace_album_artwork,
                     color=None,
                 ).classes(
                     "fx-btn-outline w-full px-2 whitespace-nowrap font-oswald text-[10px] font-semibold tracking-[0.5px]"
-                ).style("height: 28px;")
-
-                with ui.element("div").classes("grid grid-cols-2 gap-2 w-full"):
-                    replace_btn_label = f"REPLACE ART ({selected_count})" if multi_selected else "REPLACE TRACK ART"
-                    ui.button(
-                        replace_btn_label,
-                        on_click=lambda: self.replace_artwork_batch(selected_tracks) if multi_selected else self.replace_artwork(track),
-                        color=None,
-                    ).classes(
-                        "fx-btn-outline w-full px-1 whitespace-nowrap font-oswald text-[9.5px] font-semibold tracking-[0.5px]"
-                    ).style("height: 28px;")
-
-                    remove_btn_label = f"REMOVE ART ({selected_count})" if multi_selected else "REMOVE ART"
-                    ui.button(
-                        remove_btn_label,
-                        on_click=lambda: self.remove_artwork_batch(selected_tracks) if multi_selected else self.remove_artwork(track),
-                        color=None,
-                    ).classes(
-                        "fx-btn-ghost-danger w-full px-1 whitespace-nowrap font-oswald text-[9.5px] font-semibold tracking-[0.5px]"
-                    ).style("height: 28px;")
+                ).style("height: 26px;").tooltip("Choose an image file from disk and apply to all tracks in this album")
 
     def render_metadata_diff(self, track: AudioTrack):
         self.diff_container.clear()
         with self.diff_container:
             with ui.row().classes("w-full items-center justify-between no-wrap"):
-                with ui.row().classes("items-center gap-2 no-wrap"):
-                    ui.label("METADATA DIFF").classes("fx-section-head")
-                    ui.button(
-                        "EDIT TRACK DATA",
-                        on_click=lambda: self.open_track_editor_dialog(track),
-                        color=None,
-                    ).classes("fx-btn-outline px-[8px]").style("height: 22px; font-size: 9.5px;")
-
-                if track.current.junk_frames:
-                    with ui.element("div").classes("badge-unmatched"):
-                        ui.element("div").classes("dot")
-                        ui.label(f"{len(track.current.junk_frames)} JUNK FRAMES REMOVED").classes(
-                            "font-oswald text-[9px] font-semibold"
-                        )
+                ui.label("TRACK INFO").classes("fx-section-head")
 
             # Column heads: FIELD / CURRENT / PROPOSED
             with ui.row().classes("w-full items-center no-wrap").style("gap: 8px; padding: 3px 0px;"):
@@ -333,7 +319,7 @@ class InspectorPanel:
             )
 
             for label, curr_val, prop_val in fields:
-                has_diff = bool(prop_val) and curr_val != prop_val
+                has_diff = curr_val != prop_val
                 with ui.row().classes("fx-diff-row w-full no-wrap"):
                     ui.label(label).classes("fx-diff-label")
                     c_lbl = ui.label(curr_val or "—").classes("fx-diff-value truncate").style(
@@ -343,9 +329,13 @@ class InspectorPanel:
                         with c_lbl:
                             ui.tooltip(curr_val)
 
-                    p_lbl = ui.label(prop_val or "—").classes("fx-diff-value truncate").style(
-                        "color: var(--fx-text-primary);"
+                    disp_prop = prop_val or ("— (CLEARED)" if (has_diff and curr_val) else "—")
+                    disp_style = (
+                        "color: var(--fx-crimson); font-style: italic;"
+                        if (has_diff and not prop_val and curr_val)
+                        else ("color: var(--fx-text-primary);" if prop_val else "color: var(--fx-text-muted);")
                     )
+                    p_lbl = ui.label(disp_prop).classes("fx-diff-value truncate").style(disp_style)
                     if prop_val:
                         with p_lbl:
                             ui.tooltip(prop_val)
@@ -378,6 +368,37 @@ class InspectorPanel:
                             with j_lbl:
                                 ui.tooltip(frame_value or frame_type)
 
+            # Track Level Control Buttons (strictly for the active track)
+            with ui.column().classes("w-full gap-1.5 mt-2 pt-2 border-t").style("border-color: var(--fx-border);"):
+                ui.label("TRACK CONTROLS").classes(
+                    "font-oswald text-[9.5px] font-semibold tracking-[0.6px]"
+                ).style("color: var(--fx-text-muted);")
+
+                with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                    ui.button(
+                        "EDIT TRACK DETAILS",
+                        on_click=lambda: self.open_track_editor_dialog(track),
+                        color=None,
+                    ).classes(
+                        "fx-btn-outline flex-1 px-1 whitespace-nowrap font-oswald text-[9.5px] font-semibold tracking-[0.4px]"
+                    ).style("height: 28px;").tooltip("Edit metadata fields for this individual track")
+
+                    ui.button(
+                        "REPLACE TRACK ART",
+                        on_click=lambda: self.replace_artwork(track),
+                        color=None,
+                    ).classes(
+                        "fx-btn-outline flex-1 px-1 whitespace-nowrap font-oswald text-[9.5px] font-semibold tracking-[0.4px]"
+                    ).style("height: 28px;").tooltip("Choose an image file from disk and apply to this track")
+
+                    ui.button(
+                        "REMOVE TRACK ART",
+                        on_click=lambda: self.remove_artwork(track),
+                        color=None,
+                    ).classes(
+                        "fx-btn-cancel flex-1 px-1 whitespace-nowrap font-oswald text-[9.5px] font-semibold tracking-[0.4px]"
+                    ).style("height: 28px;").tooltip("Remove artwork from this track")
+
     @staticmethod
     def track_disc_text(track: AudioTrack, proposed: bool = False) -> str:
         meta = track.proposed if proposed else track.current
@@ -402,7 +423,20 @@ class InspectorPanel:
     # Actions
     # ------------------------------------------------------------------
     async def replace_album_artwork(self):
-        """Prompt user for an image file (.jpg, .png) and apply to all staged tracks in the album."""
+        """Prompt user for an image file (.jpg, .png) and apply to staged tracks belonging to this album."""
+        if not self.state.tracks:
+            ui.notify("No tracks staged.", color="warning")
+            return
+
+        active_track = None
+        if self.state.selected_track_id and self.state.selected_track_id in self.state.tracks_by_id:
+            active_track = self.state.tracks_by_id[self.state.selected_track_id]
+        elif self.state.tracks:
+            selected = [t for t in self.state.tracks if t.selected]
+            active_track = selected[0] if selected else self.state.tracks[0]
+
+        album_tracks = self.state.get_album_tracks_for(active_track) if active_track else list(self.state.tracks)
+
         img_path = await choose_image_file_dialog("Select New Album Artwork (.jpg, .png)")
         if img_path and Path(img_path).exists():
             with open(img_path, "rb") as f:
@@ -412,14 +446,94 @@ class InspectorPanel:
             self.state.album_cover_mime = mime
             info = f"Custom Album Art • {Path(img_path).name}"
 
-            # Mark all staged tracks to receive the new artwork bytes in their APIC frame
-            for t in self.state.tracks:
+            # Mark all staged tracks in this album to receive the new artwork bytes in their APIC frame
+            for t in album_tracks:
                 t.proposed.artwork_data = data
                 t.proposed.artwork_mime = mime
                 t.proposed.artwork_info = info
 
             self.update_display()
             self.state.notify()
+            ui.notify(f"Album artwork updated for {len(album_tracks)} track(s) in this album.", color="positive")
+
+    def inject_artwork_to_album(self, track: Optional[AudioTrack] = None):
+        """Copy cover art from the selected track and inject into tracks in this album, with confirmation pop-up."""
+        if not self.state.tracks:
+            ui.notify("No tracks loaded.", color="warning")
+            return
+
+        target_track = track
+        if not target_track:
+            if self.state.selected_track_id and self.state.selected_track_id in self.state.tracks_by_id:
+                target_track = self.state.tracks_by_id[self.state.selected_track_id]
+            elif self.state.tracks:
+                target_track = self.state.tracks[0]
+
+        album_tracks = self.state.get_album_tracks_for(target_track) if target_track else list(self.state.tracks)
+
+        art_data = None
+        art_mime = "image/jpeg"
+
+        if target_track and target_track.proposed.artwork_data:
+            art_data = target_track.proposed.artwork_data
+            art_mime = target_track.proposed.artwork_mime or "image/jpeg"
+        elif target_track:
+            curr_art = extract_current_artwork(target_track.file_path)
+            if curr_art:
+                art_data, art_mime = curr_art
+
+        if not art_data and self.state.album_cover_art:
+            art_data = self.state.album_cover_art
+            art_mime = self.state.album_cover_mime or "image/jpeg"
+
+        if not art_data:
+            ui.notify("The selected track has no cover art to copy. Select a track with cover art or use 'Replace Album Art'.", color="warning")
+            return
+
+        track_title = (target_track.proposed.title or target_track.current.title or target_track.file_name) if target_track else "Selected Track"
+        album_name = (target_track.proposed.album or target_track.current.album or "this album") if target_track else "this album"
+
+        with ui.dialog() as dlg, ui.card().classes("p-5 gap-3 min-w-[420px] max-w-[500px]").style(
+            "background-color: var(--fx-bg-card); border: 1px solid var(--fx-border); border-radius: 4px;"
+        ):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("collections", size="20px").style("color: var(--fx-crimson);")
+                ui.label("COPY ART TO ALBUM").classes(
+                    "font-oswald text-[13px] font-bold tracking-[0.6px]"
+                ).style("color: var(--fx-text-primary);")
+
+            ui.label(
+                f"Are you sure you want to copy cover art from '{track_title}' into all {len(album_tracks)} track(s) in album '{album_name}'?\n\n"
+                "Only tracks belonging to this album will be updated. Other staged folders/albums remain untouched."
+            ).classes("text-xs font-roboto whitespace-pre-line leading-relaxed").style("color: var(--fx-text-muted);")
+
+            with ui.row().classes("w-full justify-end items-center gap-2 mt-3"):
+                ui.button("CANCEL", on_click=dlg.close, color=None).classes(
+                    "fx-btn-outline px-[14px]"
+                ).style("height: 30px;")
+
+                def do_inject():
+                    dlg.close()
+                    info = f"Injected from {target_track.file_name if target_track else 'Selected Track'}"
+                    for t in album_tracks:
+                        t.proposed.artwork_data = art_data
+                        t.proposed.artwork_mime = art_mime
+                        t.proposed.artwork_info = info
+                        t.current.has_artwork = True
+                    self.state.album_cover_art = art_data
+                    self.state.album_cover_mime = art_mime
+                    self.update_display()
+                    self.state.notify()
+                    ui.notify(f"Injected cover art into {len(album_tracks)} track(s) in album '{album_name}'.", color="positive")
+
+                ui.button("CONFIRM & COPY", on_click=do_inject, color=None).classes(
+                    "fx-btn-primary px-[14px]"
+                ).style("height: 30px;")
+
+        dlg.open()
+
+    def inject_artwork_to_all_tracks(self, track: AudioTrack):
+        return self.inject_artwork_to_album(track)
 
     async def replace_artwork(self, track: AudioTrack):
         img_path = await choose_image_file_dialog("Select New Artwork")
@@ -480,32 +594,44 @@ class InspectorPanel:
             ui.notify("No tracks staged to edit.", color="warning")
             return
 
-        initial_album = ""
-        initial_artist = ""
-        initial_year = ""
-        initial_genre = ""
+        active_track = None
+        if self.state.selected_track_id and self.state.selected_track_id in self.state.tracks_by_id:
+            active_track = self.state.tracks_by_id[self.state.selected_track_id]
+        elif self.state.tracks:
+            selected = [t for t in self.state.tracks if t.selected]
+            active_track = selected[0] if selected else self.state.tracks[0]
 
-        for t in self.state.tracks:
-            if not initial_album and (t.proposed.album or t.current.album):
-                initial_album = t.proposed.album or t.current.album
-            if not initial_artist and (t.proposed.album_artist or t.proposed.artist or t.current.album_artist or t.current.artist):
-                initial_artist = t.proposed.album_artist or t.proposed.artist or t.current.album_artist or t.current.artist
-            if not initial_year and (t.proposed.year or t.current.year):
-                initial_year = t.proposed.year or t.current.year
-            if not initial_genre and (t.proposed.genre or t.current.genre):
-                initial_genre = t.proposed.genre or t.current.genre
+        album_tracks = self.state.get_album_tracks_for(active_track) if active_track else list(self.state.tracks)
+
+        initial_album = (active_track.proposed.album or active_track.current.album) if active_track else ""
+        initial_artist = (active_track.proposed.album_artist or active_track.proposed.artist or active_track.current.album_artist or active_track.current.artist) if active_track else ""
+        initial_year = (active_track.proposed.year or active_track.current.year) if active_track else ""
+        initial_genre = (active_track.proposed.genre or active_track.current.genre) if active_track else ""
 
         with ui.dialog() as dialog, ui.card().classes("p-5 gap-3").style(
             "background-color: var(--fx-bg-card); border: 1px solid var(--fx-border); "
-            "min-width: 440px; max-width: 500px; border-radius: 4px;"
+            "min-width: 460px; max-width: 520px; border-radius: 4px;"
         ):
-            with ui.column().classes("w-full gap-1"):
-                ui.label("EDIT ALBUM METADATA").classes(
-                    "font-oswald text-[13px] font-bold tracking-[0.6px]"
-                ).style("color: var(--fx-text-primary);")
-                ui.label("Batch edit proposed metadata across staged tracks").classes(
-                    "font-roboto text-[11px]"
-                ).style("color: var(--fx-text-muted);")
+            with ui.row().classes("w-full items-center justify-between no-wrap"):
+                with ui.column().classes("gap-0.5"):
+                    ui.label("EDIT ALBUM METADATA").classes(
+                        "font-oswald text-[13px] font-bold tracking-[0.6px]"
+                    ).style("color: var(--fx-text-primary);")
+                    subtitle = f"Album ({len(album_tracks)} tracks) • Values from Track {active_track.id}: {active_track.file_name}" if active_track else "Batch edit proposed metadata across staged tracks"
+                    ui.label(subtitle).classes(
+                        "font-roboto text-[11px] truncate max-w-[310px]"
+                    ).style("color: var(--fx-text-muted);")
+                ui.button(
+                    "CLEAR ALL FIELDS",
+                    on_click=lambda: clear_all_fields(),
+                    color=None,
+                ).classes("fx-btn-outline px-2 text-[10px]").style("height: 24px;").tooltip("Clear all fields to retain original track metadata")
+
+            def clear_all_fields():
+                album_input.set_value("")
+                artist_input.set_value("")
+                year_input.set_value("")
+                genre_input.set_value("")
 
             with ui.column().classes("w-full gap-2.5 my-2"):
                 # Field 1: Album Title
@@ -515,10 +641,14 @@ class InspectorPanel:
                     ).style("color: var(--fx-text-muted);")
                     album_input = ui.input(
                         value=initial_album,
-                        placeholder="Enter album title..."
+                        placeholder="Enter album title (leave blank to keep track info)..."
                     ).props("dense outlined").classes("w-full fx-dialog-input").style(
                         "background-color: var(--fx-bg-input);"
                     )
+                    with album_input.add_slot("append"):
+                        ui.icon("close", size="14px").classes("cursor-pointer").style(
+                            "color: var(--fx-text-muted);"
+                        ).on("click", lambda: album_input.set_value("")).tooltip("Clear to keep original track info")
 
                 # Field 2: Album Artist / Artist
                 with ui.column().classes("w-full gap-1"):
@@ -527,10 +657,14 @@ class InspectorPanel:
                     ).style("color: var(--fx-text-muted);")
                     artist_input = ui.input(
                         value=initial_artist,
-                        placeholder="Enter album artist or artist..."
+                        placeholder="Enter album artist or artist (leave blank to keep track info)..."
                     ).props("dense outlined").classes("w-full fx-dialog-input").style(
                         "background-color: var(--fx-bg-input);"
                     )
+                    with artist_input.add_slot("append"):
+                        ui.icon("close", size="14px").classes("cursor-pointer").style(
+                            "color: var(--fx-text-muted);"
+                        ).on("click", lambda: artist_input.set_value("")).tooltip("Clear to keep original track info")
 
                 # Row with Year & Genre
                 with ui.row().classes("w-full gap-3 no-wrap"):
@@ -544,6 +678,10 @@ class InspectorPanel:
                         ).props("dense outlined").classes("w-full fx-dialog-input").style(
                             "background-color: var(--fx-bg-input);"
                         )
+                        with year_input.add_slot("append"):
+                            ui.icon("close", size="14px").classes("cursor-pointer").style(
+                                "color: var(--fx-text-muted);"
+                            ).on("click", lambda: year_input.set_value("")).tooltip("Clear to keep original track info")
 
                     with ui.column().classes("flex-1 gap-1"):
                         ui.label("GENRE").classes(
@@ -555,14 +693,23 @@ class InspectorPanel:
                         ).props("dense outlined").classes("w-full fx-dialog-input").style(
                             "background-color: var(--fx-bg-input);"
                         )
+                        with genre_input.add_slot("append"):
+                            ui.icon("close", size="14px").classes("cursor-pointer").style(
+                                "color: var(--fx-text-muted);"
+                            ).on("click", lambda: genre_input.set_value("")).tooltip("Clear to keep original track info")
 
             ui.label("BATCH TARGET").classes(
                 "font-oswald text-[10px] font-semibold tracking-[0.5px] mt-1"
             ).style("color: var(--fx-text-muted);")
 
+            album_scope_label = f"Apply to All Tracks in Album ({len(album_tracks)})"
+            selected_in_album = [t for t in album_tracks if t.selected]
+            selected_count = len(selected_in_album) if selected_in_album else len([t for t in self.state.tracks if t.selected])
+            selected_scope_label = f"Apply to Selected Tracks Only ({selected_count})"
+
             scope_radio = ui.radio(
-                ["Apply to All Tracks in Album", "Apply to Selected Tracks Only"],
-                value="Apply to All Tracks in Album",
+                [album_scope_label, selected_scope_label],
+                value=album_scope_label,
             ).props("dense").classes("text-xs font-roboto")
 
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
@@ -572,11 +719,14 @@ class InspectorPanel:
 
                 def apply_batch():
                     scope = scope_radio.value
-                    targets = (
-                        self.state.tracks
-                        if scope == "Apply to All Tracks in Album"
-                        else [t for t in self.state.tracks if t.selected]
-                    )
+                    if scope.startswith("Apply to All Tracks in Album"):
+                        targets = album_tracks
+                    else:
+                        selected_in_album = [t for t in album_tracks if t.selected]
+                        targets = selected_in_album if selected_in_album else [t for t in self.state.tracks if t.selected]
+                        if not targets:
+                            targets = album_tracks
+
                     new_album = album_input.value.strip() if album_input.value else ""
                     new_artist = artist_input.value.strip() if artist_input.value else ""
                     new_year = year_input.value.strip() if year_input.value else ""
@@ -598,6 +748,7 @@ class InspectorPanel:
                     dialog.close()
                     self.update_display()
                     self.state.notify()
+                    ui.notify(f"Updated album metadata for {len(targets)} track(s).", color="positive")
 
                 ui.button("APPLY CHANGES", on_click=apply_batch, color=None).classes(
                     "fx-btn-primary px-[14px]"

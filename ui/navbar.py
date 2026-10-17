@@ -63,8 +63,8 @@ class TopNavbar:
             ).on("click", self.toggle_theme):
                 self.logo_img = ui.image(logo_url(self.state.dark_mode)).classes("fx-logo")
 
-                # Subtitle: AUDIO WORKBENCH // v0.1.5 (Oswald 9.5px / 600 / 0.6px)
-                ui.label("AUDIO WORKBENCH // v0.1.5").classes(
+                # Subtitle: v0.2.0 (Oswald 9.5px / 600 / 0.6px)
+                ui.label("v0.2.0").classes(
                     "font-oswald text-[9.5px] font-semibold tracking-[0.6px] leading-none"
                 ).style("color: var(--fx-text-muted);")
 
@@ -89,7 +89,7 @@ class TopNavbar:
                 )
 
             attach_folder_drop_zone(self.dir_row, self.on_folder_drop or self.handle_folder_dropped)
-            self.dir_row.tooltip("Drag & drop a source folder here to load it")
+            self.dir_row.tooltip("Drag & drop source folders here to load, or hold Ctrl to append")
 
             # Right: Action Group
             with ui.row().classes("items-center gap-2 flex-shrink-0 no-wrap"):
@@ -114,19 +114,12 @@ class TopNavbar:
                         f"APPLY CHANGES ({selected_count} SELECTED)"
                     ).classes("font-oswald text-[11px] font-bold tracking-[0.6px]")
 
-                # Cancel / Abort
+                # Clear / Cancel
                 with ui.button(on_click=self.on_cancel, color=None).classes(
-                    "fx-btn-ghost-danger px-[13px]"
-                ).style("gap: 4px;"):
-                    ui.icon("close", size="14px").style("color: var(--fx-crimson);")
-                    ui.label("CANCEL / ABORT").classes("font-oswald text-[11px] font-semibold tracking-[0.6px]")
-
-                # Theme Toggle (icon-only, flat)
-                self.theme_btn = ui.button(
-                    icon="dark_mode" if self.state.dark_mode else "light_mode",
-                    on_click=self.toggle_theme,
-                    color=None,
-                ).props("flat round dense").classes("fx-theme-toggle")
+                    "fx-btn-cancel px-[13px]"
+                ).style("gap: 4px;").tooltip("Clear loaded tracks or cancel running operation"):
+                    ui.icon("close", size="14px")
+                    ui.label("CLEAR / CANCEL").classes("font-oswald text-[11px] font-semibold tracking-[0.6px]")
 
     # ------------------------------------------------------------------
     # Theme

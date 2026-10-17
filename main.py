@@ -13,6 +13,7 @@ moment the theme flips - and the header logo is re-bound to the matching SVG ass
 import os
 import sys
 from pathlib import Path
+from typing import Any, List, Optional, Union
 from nicegui import ui, app
 from nicegui.native import find_open_port
 
@@ -22,6 +23,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 # Mount static assets directory for NiceGUI (logos live here)
 app.add_static_files("/assets", str(BASE_DIR / "assets"))
+app.add_static_files("/icons", str(BASE_DIR / "icons"))
 
 from core.fingerprint import setup_fpcalc_environment
 from core.state import FXsonicState
@@ -69,12 +71,23 @@ LOGO_PRELOAD_HTML = (
     f'<link rel="preload" as="image" href="{LOGO_URL_LIGHT}">'
 )
 
+# Icon definitions: favicon (<100px) for small representations and app icon (>100px) for larger displays
+ICON_HEAD_HTML = (
+    '<link rel="icon" type="image/x-icon" href="/icons/app_icon.ico">'
+    '<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">'
+    '<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">'
+    '<link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48x48.png">'
+    '<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">'
+    '<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">'
+)
+
 
 @ui.page("/")
 def main_page():
     # Inject global styles & fonts (dark tokens on :root, light on body.body--light)
     ui.add_head_html(f"<style>{GLOBAL_CSS}</style>")
     ui.add_head_html(LOGO_PRELOAD_HTML)
+    ui.add_head_html(ICON_HEAD_HTML)
 
     # Initialize state (dark mode is the FXsonic default)
     state = FXsonicState()
@@ -146,27 +159,38 @@ def render_workbench(state: FXsonicState, dark):
         if components["inspector"]:
             components["inspector"].update_display()
 
-    async def handle_folder_dropped(folder_path: str = ""):
-        """Load a folder dropped onto a drop zone.
+    async def handle_folder_dropped(paths_or_folder: Any = "", append: bool = False):
+        """Load one or more folders/files dropped onto a drop zone.
 
-        ``folder_path`` arrives already resolved to an absolute, existing
-        directory by :mod:`ui.drop_zone` (the OS path of a dropped folder is only
-        reachable through pywebview's WebView2 bridge, never from page JS).
+        ``append=True`` keeps existing tracks and adds new unique files without clearing.
         """
-        if not folder_path:
+        if not paths_or_folder:
             return
 
-        state.source_directory = folder_path
-        state.search_filter = ""
-        state.status_filter = "ALL"
-        if components["navbar"] and components["navbar"].dir_input:
-            components["navbar"].dir_input.value = folder_path
-        if components["staging_table"]:
-            if components["staging_table"].search_input:
-                components["staging_table"].search_input.value = ""
-            components["staging_table"].reset_filters()
+        if isinstance(paths_or_folder, str):
+            paths = [paths_or_folder]
+        elif isinstance(paths_or_folder, (list, tuple)):
+            paths = [str(p) for p in paths_or_folder if p]
+        else:
+            paths = [str(paths_or_folder)]
 
-        await state.intake_directory(folder_path)
+        if not paths:
+            return
+
+        if not append:
+            state.search_filter = ""
+            state.status_filter = "ALL"
+            state.active_context_filter = None
+            if components["staging_table"]:
+                if components["staging_table"].search_input:
+                    components["staging_table"].search_input.value = ""
+                components["staging_table"].reset_filters()
+
+        await state.intake_paths(paths, append=append)
+
+        if components["navbar"] and components["navbar"].dir_input:
+            components["navbar"].dir_input.value = state.source_directory
+
         refresh_all_ui()
 
     # Prevent default browser window file navigation when dragging & dropping
@@ -218,7 +242,7 @@ def render_workbench(state: FXsonicState, dark):
                 )
 
         # 4. Activity Drawer (Height: 43.5px fixed footer, pinned flush to the bottom)
-        components["footer"] = StatusFooter(state=state)
+        components["footer"] = StatusFooter(state=state, dark_mode=dark)
 
     # Native drops are forwarded by the window process to the server endpoint and
     # applied to the registered workbench (see ui/drop_zone.py).
@@ -231,7 +255,8 @@ def render_workbench(state: FXsonicState, dark):
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(
-        title="FXsonic Audio Workbench",
+        title="FXsonic",
+        favicon=str(BASE_DIR / "icons" / "app_icon.ico"),
         native=not HEADLESS,
         window_size=(1440, 940),
         dark=True,
@@ -244,5 +269,5 @@ if __name__ in {"__main__", "__mp_main__"}:
         # work already runs off the event loop (core.fingerprint's worker pool is driven
         # from a thread, and core.state awaits its write pool) and this gives the socket
         # room to survive the remaining CPU spikes.
-        reconnect_timeout=10.0,
+        reconnect_timeout=60.0,
     )

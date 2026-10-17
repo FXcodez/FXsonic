@@ -2,7 +2,7 @@
 ; Inno Setup 6 Script for building Windows Installer package
 
 #define MyAppName "FXsonic"
-#define MyAppVersion "0.1.5"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "FXsonic"
 #define MyAppExeName "FXsonic.exe"
 #define MyAppAssocName MyAppName + " Audio Session"
@@ -25,7 +25,7 @@ AllowNoIcons=yes
 LicenseFile=LICENSE
 OutputDir=dist
 OutputBaseFilename=FXsonic-v{#MyAppVersion}-Setup
-SetupIconFile=icons\favicon.ico
+SetupIconFile=icons\app_icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -43,9 +43,10 @@ Source: "dist\FXsonic\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

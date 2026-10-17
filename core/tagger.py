@@ -146,46 +146,50 @@ def applied_metadata(
 ) -> TrackMetadata:
     """Predict what :func:`write_track_metadata` just wrote, without re-reading it.
 
-    The writer only sets a text frame when the proposal carries a value, so an empty
-    proposal leaves the file's own value in place.  Re-building the same result here
-    means APPLY CHANGES can update the staging rows instantly instead of parsing every
-    file a second time (the old behaviour, which doubled the batch cost).
+    Re-building the result here means APPLY CHANGES can update the staging rows
+    instantly instead of parsing every file a second time.
     """
     base = current if current is not None else TrackMetadata()
 
-    def pick(new_value: str, old_value: str) -> str:
-        value = sanitize_metadata_text(new_value) if strip_junk else (new_value or "")
-        return value or (old_value or "")
+    title_val = sanitize_metadata_text(proposed.title) if strip_junk else (proposed.title or "")
+    artist_val = sanitize_metadata_text(proposed.artist) if strip_junk else (proposed.artist or "")
+    album_val = sanitize_metadata_text(proposed.album) if strip_junk else (proposed.album or "")
+    album_artist_val = sanitize_metadata_text(proposed.album_artist) if strip_junk else (proposed.album_artist or "")
+    year_val = proposed.year or ""
+    genre_val = sanitize_metadata_text(proposed.genre) if strip_junk else (proposed.genre or "")
 
     return TrackMetadata(
-        title=pick(proposed.title, base.title),
-        artist=pick(proposed.artist, base.artist),
-        album=pick(proposed.album, base.album),
-        album_artist=pick(proposed.album_artist, base.album_artist),
-        year=pick(proposed.year, base.year),
-        track_number=pick(proposed.track_number, base.track_number),
-        disc_number=pick(proposed.disc_number, base.disc_number),
-        genre=pick(proposed.genre, base.genre),
+        title=title_val or base.title,
+        artist=artist_val or base.artist,
+        album=album_val or base.album,
+        album_artist=album_artist_val,  # Empty means deliberately cleared/deleted
+        year=year_val or base.year,
+        track_number=proposed.track_number or base.track_number,
+        disc_number=proposed.disc_number or base.disc_number,
+        genre=genre_val or base.genre,
         has_artwork=False if proposed.artwork_info == "Removed" else bool(embedded_artwork or base.has_artwork),
         junk_frames=[] if strip_junk else list(base.junk_frames),
     )
 
 
 def _set_text_frame(tags, frame_id: str, frame_cls, value: str, encoding: int) -> bool:
-    """Write one text frame, but only when it actually differs.
+    """Write one text frame, or delete the frame if value is empty.
 
-    Returns ``True`` when the frame was touched.  Leaving identical frames untouched
-    is what keeps the ID3 header (and its padding) in place instead of forcing a full
-    audio-stream rewrite for a file that is already correct.
+    Returns ``True`` when the frame was touched. Leaving identical frames untouched
+    keeps the ID3 header in place instead of forcing unnecessary rewrites.
     """
-    if not value:
+    val = (value or "").strip()
+    if not val:
+        if frame_id in tags:
+            del tags[frame_id]
+            return True
         return False
     existing = tags.get(frame_id)
     if existing is not None:
         text = getattr(existing, "text", None) or []
-        if len(text) == 1 and str(text[0]) == str(value):
+        if len(text) == 1 and str(text[0]) == str(val):
             return False
-    tags[frame_id] = frame_cls(encoding=encoding, text=[value])
+    tags[frame_id] = frame_cls(encoding=encoding, text=[val])
     return True
 
 

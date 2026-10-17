@@ -1,6 +1,6 @@
 [project]
 name = "fxsonic"
-version = "0.1.5"
+version = "0.2.0"
 description = "Desktop audio workbench for acoustic fingerprinting, ID3v2.4 tagging, and album artwork retrieval"
 readme = "README.md"
 requires-python = ">=3.13"

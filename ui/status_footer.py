@@ -26,8 +26,10 @@ DEFAULT_PROGRESS_COLOR = "primary"
 
 
 class StatusFooter:
-    def __init__(self, state: FXsonicState):
+    def __init__(self, state: FXsonicState, dark_mode=None):
         self.state = state
+        self.dark_mode_element = dark_mode
+        self.theme_btn = None
         self.progress_bar = None
         self.progress_label = None
         self.counter_verified = None
@@ -45,18 +47,26 @@ class StatusFooter:
         ).style(
             "gap: 16px; background-color: var(--fx-bg-card); border-top: 1px solid var(--fx-border);"
         ):
-            # Left: Linear Progress Group (300px, label above the bar)
-            with ui.column().classes("w-[300px] flex-shrink-0").style("gap: 5px;"):
-                self.progress_label = ui.label(self.progress_text()).classes(
-                    "font-roboto text-[11px] leading-none truncate"
-                ).style("color: var(--fx-text-muted);")
+            # Left: Theme Toggle (Bottom Left) + Linear Progress Group
+            with ui.row().classes("items-center no-wrap").style("gap: 12px;"):
+                self.theme_btn = ui.button(
+                    icon="dark_mode" if self.state.dark_mode else "light_mode",
+                    on_click=self.toggle_theme,
+                    color=None,
+                ).props("flat round dense").classes("fx-theme-toggle")
+                self.theme_btn.tooltip("Toggle Dark / Light Theme")
 
-                self.progress_bar = ui.linear_progress(
-                    value=self.state.progress_val,
-                    show_value=False,
-                ).props('rounded size="5px"').classes("w-full").style(
-                    "background-color: var(--fx-progress-bg); border-radius: 0px;"
-                )
+                with ui.column().classes("w-[280px] flex-shrink-0").style("gap: 5px;"):
+                    self.progress_label = ui.label(self.progress_text()).classes(
+                        "font-roboto text-[11px] leading-none truncate"
+                    ).style("color: var(--fx-text-muted);")
+
+                    self.progress_bar = ui.linear_progress(
+                        value=self.state.progress_val,
+                        show_value=False,
+                    ).props('rounded size="5px"').classes("w-full").style(
+                        "background-color: var(--fx-progress-bg); border-radius: 0px;"
+                    )
 
             # Center: Metrics Counters
             with ui.row().classes("items-center gap-4 flex-shrink-0 no-wrap"):
@@ -83,18 +93,32 @@ class StatusFooter:
             ).style("color: var(--fx-text-primary);")
 
     def progress_text(self) -> str:
-        """Footer label for the phase that is running.
-
-        The percentage is the *current phase's* own 0-100% (a phase sweeps the bar
-        once), so the label mirrors the mockup's "Fingerprinting: 24 of 28 tracks
-        (85%)" while always matching what the bar is showing.
-        """
+        """Footer label for the phase that is running."""
         total = len(self.state.tracks)
         if not total:
             return "Ready • Idle"
-        done = int(total * self.state.progress_val)
         pct = int(self.state.progress_val * 100)
+        done = int(total * self.state.progress_val)
         phase = getattr(self.state, "progress_phase", "") or "Fingerprinting"
+
+        # When operation has finished (100% or not running scan/apply)
+        if not self.state.is_scanning and not self.state.is_applying:
+            if pct >= 100 or self.state.progress_val >= 1.0 or "complete" in phase.lower():
+                if "fingerprint" in phase.lower():
+                    return f"Fingerprinting Complete: {total} tracks (100%)"
+                if "apply" in phase.lower():
+                    return f"Apply Complete: {total} tracks (100%)"
+                if "identif" in phase.lower():
+                    return f"Identification Complete: {total} tracks (100%)"
+                return f"{phase}: {total} tracks (100%)"
+            if self.state.progress_val == 0.0:
+                return f"Ready • {total} tracks staged"
+
+        if "complete" in phase.lower() or pct >= 100:
+            if "fingerprint" in phase.lower():
+                return f"Fingerprinting Complete: {total} tracks (100%)"
+            return f"{phase}: {total} tracks (100%)"
+
         return f"{phase}: {done} of {total} tracks ({pct}%)"
 
     def _apply_progress_color(self) -> None:
@@ -105,7 +129,22 @@ class StatusFooter:
             self._progress_color = color
             self.progress_bar.props(f'color="{color}"')
 
+    def toggle_theme(self):
+        self.set_theme(not self.state.dark_mode)
+
+    def set_theme(self, is_dark: bool):
+        self.state.dark_mode = bool(is_dark)
+        if self.dark_mode_element is not None:
+            self.dark_mode_element.set_value(self.state.dark_mode)
+        else:
+            ui.dark_mode().set_value(self.state.dark_mode)
+        if self.theme_btn:
+            self.theme_btn.props(f'icon="{"dark_mode" if self.state.dark_mode else "light_mode"}"')
+        self.state.notify()
+
     def update_display(self):
+        if self.theme_btn:
+            self.theme_btn.props(f'icon="{"dark_mode" if self.state.dark_mode else "light_mode"}"')
         if self.progress_label:
             self.progress_label.text = self.progress_text()
         if self.progress_bar:

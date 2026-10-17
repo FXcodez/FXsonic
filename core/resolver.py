@@ -38,9 +38,9 @@ from .fingerprint import (
 )
 
 PROMO_PATTERNS = [
-    re.compile(r'(?i)\s*[\(\[\{]?(?:https?:\/\/)?(?:www\.)?[\w\.-]+\.(?:com|info|org|net|me|in|co|cc|vip|biz|xyz|top|site|link)[\)\]\}]?'),
-    re.compile(r'(?i)\|\s*[\w\.-]+\.(?:info|com|net|org|in|me|cc|vip)'),
-    re.compile(r'(?i)[\(\[\{]?(?:mp3wale|songspk|pagalworld|pagalsongs|djmaza|wapking|pendujatt|freshmaza|indiamp3|webmusic)[\)\]\}]?'),
+    re.compile(r'(?i)\s*[\(\[\{]?(?:https?:\/\/)?(?:www\.)?[\w\.-]+\.(?:com|info|org|net|me|in|co|cc|vip|biz|xyz|top|site|link|dev|app|io|mobi)[\)\]\}]?'),
+    re.compile(r'(?i)\|\s*[\w\.-]+\.(?:info|com|net|org|in|me|cc|vip|dev|app|io|mobi)'),
+    re.compile(r'(?i)[\(\[\{]?(?:mp3wale|songspk|pagalworld|pagalsongs|djmaza|wapking|pendujatt|freshmaza|indiamp3|webmusic|masstamilan|masstamil|starmusiq|isaimini|naasongs|sensongs|tamilwire|tamiltunes)[\)\]\}]?'),
     re.compile(r'\s*[\(\[\{]\s*[\)\]\}]'),
 ]
 
@@ -1012,12 +1012,44 @@ def _normalize_track_num(val: Any) -> Optional[int]:
 
 
 def _extract_track_num_from_filename(name: str) -> Optional[int]:
+    # Match disc-track pattern like 1-05, 1.05, 01-05
+    m_disc = re.match(r"^\s*(?:cd|disc)?\s*(\d+)[\s._\-]+(\d{2,})[\s._\-]", name, re.IGNORECASE)
+    if m_disc:
+        try:
+            return int(m_disc.group(2))
+        except ValueError:
+            pass
+
     m = re.match(r"^\s*(\d+)[\s._\-]", name)
     if m:
         try:
-            return int(m.group(1))
+            num = int(m.group(1))
+            # If 3-digit number like 101, 102, 201 without separator, could be disc+track
+            if 101 <= num <= 999 and (num % 100) > 0:
+                return num % 100
+            return num
         except ValueError:
             return None
+    return None
+
+
+def _extract_disc_num_from_filename(name: str) -> Optional[int]:
+    m_disc = re.match(r"^\s*(?:cd|disc)?\s*(\d+)[\s._\-]+(\d{2,})[\s._\-]", name, re.IGNORECASE)
+    if m_disc:
+        try:
+            return int(m_disc.group(1))
+        except ValueError:
+            pass
+    m = re.match(r"^\s*(\d{3,4})[\s._\-]", name)
+    if m:
+        try:
+            num = int(m.group(1))
+            if 101 <= num <= 999:
+                return num // 100
+            elif 1001 <= num <= 9999:
+                return num // 1000
+        except ValueError:
+            pass
     return None
 
 
@@ -1234,8 +1266,10 @@ async def resolve_album_consensus(
         # 5. Map staged local tracks to the release tracklist
         matched_rel_indices = set()
         _report(progress, finalized / total_tracks, "Identifying")
-        for track in tracks:
+        for i, track in enumerate(tracks):
             control.check(token)
+            if i % 3 == 0:
+                await asyncio.sleep(0)
             local_num = _normalize_track_num(track.current.track_number)
             if local_num == 0:
                 local_num = None
@@ -1246,6 +1280,8 @@ async def resolve_album_consensus(
 
             local_dur = float(track.duration or 0.0)
             local_disc = _normalize_track_num(track.current.disc_number)
+            if local_disc is None or local_disc == 0:
+                local_disc = _extract_disc_num_from_filename(track.file_name)
             clean_local_title = sanitize_metadata_text(track.current.title)
 
             matched_item = None
@@ -1257,6 +1293,11 @@ async def resolve_album_consensus(
                     (idx, item) for idx, item in enumerate(rel_tracks)
                     if item["number_int"] == local_num and idx not in matched_rel_indices
                 ]
+                # Sequential multi-disc offset fallback: tracks numbered 1..N across multiple discs
+                if not candidates and 1 <= local_num <= len(rel_tracks):
+                    seq_idx = local_num - 1
+                    if seq_idx not in matched_rel_indices:
+                        candidates = [(seq_idx, rel_tracks[seq_idx])]
                 valid_candidates = []
                 for idx, item in candidates:
                     rel_dur = item.get("duration")
@@ -1485,6 +1526,7 @@ async def resolve_album_consensus(
             for task in tasks:
                 if not task.done():
                     task.cancel()
+        _report(progress, 1.0, "Fingerprinting Complete")
 
     return album_cover_bytes, album_cover_mime
 

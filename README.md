@@ -4,45 +4,61 @@
   <img src="assets/logo.png" alt="FXsonic Logo" width="420" />
 </p>
 
-FXsonic is a native desktop application for tagging audio files and managing album metadata. It generates acoustic fingerprints with Chromaprint to match recordings against the AcoustID and MusicBrainz databases, writes standard ID3v2.4 tags, and embeds cover art.
+FXsonic is a desktop application for audio file tagging and album metadata management. It calculates acoustic fingerprints with Chromaprint to match recordings against the AcoustID and MusicBrainz databases, writes standard ID3v2.4 tags, and embeds album art.
 
 ---
 
 ## Interface
 
-### Dark theme
-![FXsonic Dark Theme](assets/screenshots/dark-workbench.png)
+### Staging table with loaded tracks
+![FXsonic Workbench Loaded](assets/screenshots/fxsonic-loaded.png)
 
-### Light theme
-![FXsonic Light Theme](assets/screenshots/light-workbench.png)
+### Manual track editor
+![FXsonic Track Editor](assets/screenshots/fxsonic-edit-tracks.png)
+
+### Empty drop zone
+![FXsonic Empty Workbench](assets/screenshots/fxsonic-blank.png)
 
 ---
 
 ## Features
 
-- Acoustic fingerprinting with bundled `fpcalc` binary
-- Automatic track matching through AcoustID and MusicBrainz
-- ID3v2.4 tag writing with UTF-8 encoding via `mutagen`
-- Cover art retrieval from the Cover Art Archive with automated resizing
-- Smart title casing with track number stripping and cleanup of common release noise
-- Optional file renaming to match clean track titles
-- Native desktop interface built with NiceGUI and PyWebView
-- Dark and light theme toggle
+- Multi-format audio intake: Scans `.mp3`, `.flac`, `.m4a`, `.ogg`, `.opus`, `.wav`, and `.aiff` files.
+- Acoustic fingerprinting: Bundled `fpcalc` binary with AcoustID and MusicBrainz matching, including Romanized alias lookups.
+- Persistent fingerprint cache: SQLite cache (`cache.db`) stores file modification times and fingerprint hashes, skipping rescans on unmodified files.
+- Multi-folder intake: Drag and drop files or folders. Hold `Ctrl` while dropping to append tracks to the table without clearing existing files.
+- Staging table sorting and search: Sort by file name, album, artist, title, year, track number, or status. Instant search filters the table in real time.
+- Contextual selection: Filter and select tracks by artist, album, folder, or match status.
+- Manual track editing: Inspect track metadata, override artist, album, track title, year, and track numbering directly from the table.
+- Title cleaning: Clean up noisy titles by stripping bracketed text, track numbers, and extra whitespace.
+- Duplicate detection and consolidation: Identifies duplicates across fingerprints, tags, and file stems, with an option to consolidate unique tracks into a single album folder.
+- Cover art retrieval and injection: Downloads high-resolution artwork from the Cover Art Archive, with an option to apply one track's artwork across every loaded file.
+- Multi-disc numbering: Automatically detects disc prefixes (`101`, `1-01`) and continuous multi-disc track sequences.
+- Integrated help: Offline user guide (`help.html`) accessible from the options bar.
+- Industrial dark and light themes: Toggle between themes from the bottom footer.
+
+---
+
+## Releases
+
+Download the latest version from [GitHub Releases](https://github.com/FXcodez/FXsonic/releases):
+
+- **Windows Installer (`FXsonic-v0.2.0-Setup.exe`)**: Standard setup wizard with Start Menu integration and uninstaller support.
+- **Portable ZIP (`FXsonic-v0.2.0-windows-x64.zip`)**: Standalone archive. Extract the folder and launch `FXsonic.exe` directly without installation or administrative permissions.
 
 ---
 
 ## Requirements
 
-- Windows 10 or 11
-- Python 3.13 or newer (for running from source)
-- `fpcalc` (Chromaprint binary, bundled under `bin/fpcalc.exe`)
-- Microsoft Edge WebView2 (standard on modern Windows installations)
+- Windows 10 or 11 (64-bit)
+- Microsoft Edge WebView2 runtime (pre-installed on Windows 11; available for Windows 10)
+- Python 3.13 or newer (only needed if running from source)
 
 ---
 
-## Quick start
+## Running from source
 
-### Running from source with uv
+### With uv (recommended)
 
 ```bash
 git clone https://github.com/FXcodez/FXsonic.git
@@ -51,7 +67,7 @@ uv sync
 uv run python main.py
 ```
 
-### Running with standard pip
+### With standard pip
 
 ```bash
 git clone https://github.com/FXcodez/FXsonic.git
@@ -64,29 +80,17 @@ python main.py
 
 ---
 
-## How to use
+## Building standalone binaries
 
-1. Drop `.mp3` files or folders into the drop zone.
-2. FXsonic calculates an acoustic fingerprint for each track and queries MusicBrainz for release data.
-3. Review the matched artist, album, track title, and cover art in the staging table and inspector panel.
-4. Set options in the bottom bar, including artwork embedding, junk frame stripping, and atomic file renaming.
-5. Click **Write Tags** to update your files.
-
----
-
-## Building a standalone executable
-
-To compile the application into a portable Windows executable:
+To build the standalone application bundle and portable archive:
 
 ```bash
 uv run python build.py
 ```
 
-The output is written to `dist/FXsonic/`. The folder contains `FXsonic.exe` and the bundled `bin/fpcalc.exe` binary.
+This compiles the binary into `dist/FXsonic/` and creates `dist/FXsonic-v0.2.0-windows-x64.zip`. If Inno Setup 6 is installed on the machine, `build.py` also compiles `dist/FXsonic-v0.2.0-Setup.exe`.
 
-### Packaging a Windows Installer
-
-To bundle the compiled application into a self-contained setup installer (`FXsonic-v0.1.5-Setup.exe`):
+To compile the installer manually:
 
 ```bash
 iscc installer.iss
@@ -94,12 +98,9 @@ iscc installer.iss
 
 ---
 
-## Releases
+## Help and documentation
 
-Pre-built packages are published under [Releases](https://github.com/FXcodez/FXsonic/releases):
-
-- **Windows Installer (`FXsonic-v0.1.5-Setup.exe`)**: Recommended for most users. Guided setup wizard with Start Menu integration and a clean uninstaller.
-- **Portable Zip (`FXsonic-v0.1.5-windows-x64.zip`)**: Standalone archive. Download, extract, and run `FXsonic.exe` directly without installation or administrator rights.
+An offline user guide is included with the application. Open `help.html` in any browser or click the help icon in the FXsonic options bar to view the interface reference, workflow guide, and keyboard shortcuts.
 
 ---
 

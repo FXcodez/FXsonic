@@ -34,7 +34,7 @@ import PyInstaller.__main__
 
 BASE_DIR = Path(__file__).parent.resolve()
 APP_NAME = "FXsonic"
-ICON = BASE_DIR / "icons" / "favicon.ico"  # multi-size (16..256) ICO
+ICON = BASE_DIR / "icons" / "app_icon.ico"  # multi-size (16..256) ICO
 ENTRY_POINT = BASE_DIR / "main.py"
 
 
@@ -57,6 +57,8 @@ def build() -> None:
         # fpcalc.exe is resolved from the same bundle root (core/fingerprint.py).
         f"--add-data={BASE_DIR / 'bin' / 'fpcalc.exe'}{os.pathsep}bin",
         f"--add-data={BASE_DIR / 'assets'}{os.pathsep}assets",
+        f"--add-data={BASE_DIR / 'icons'}{os.pathsep}icons",
+        f"--add-data={BASE_DIR / 'help.html'}{os.pathsep}.",
         # --- imports the analyser cannot see --------------------------------
         # NiceGUI has no PyInstaller hook of its own, so collect its data files
         # (static JavaScript/CSS payload) and every element submodule.
@@ -73,6 +75,62 @@ def build() -> None:
     ])
 
 
+def package_portable(version: str = "0.2.0") -> Path:
+    """Create portable standalone ZIP package from dist/FXsonic."""
+    import zipfile
+    dist_dir = BASE_DIR / "dist"
+    app_dir = dist_dir / APP_NAME
+    zip_path = dist_dir / f"{APP_NAME}-v{version}-windows-x64.zip"
+
+    if not app_dir.exists():
+        sys.exit(f"Cannot package: {app_dir} does not exist.")
+
+    print(f"Creating portable archive: {zip_path.name}...")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for root, _, files in os.walk(app_dir):
+            for file in files:
+                file_path = Path(root) / file
+                rel_path = file_path.relative_to(dist_dir)
+                zf.write(file_path, arcname=str(rel_path))
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"Portable archive created successfully: {zip_path.name} ({size_mb:.2f} MB)")
+    return zip_path
+
+
+def compile_installer() -> None:
+    """Compile Inno Setup installer package if ISCC is available."""
+    import shutil
+    import subprocess
+
+    iss_file = BASE_DIR / "installer.iss"
+    if not iss_file.exists():
+        print(f"Skipping installer: {iss_file} not found.")
+        return
+
+    # Look for iscc in PATH and standard Inno Setup installation directories
+    candidate_paths = [
+        shutil.which("iscc"),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "")) / "Inno Setup 6" / "ISCC.exe",
+        Path(os.environ.get("ProgramFiles", "")) / "Inno Setup 6" / "ISCC.exe",
+    ]
+    iscc = next((str(p) for p in candidate_paths if p and Path(p).is_file()), None)
+
+    if not iscc:
+        print("ISCC.exe not found. Install Inno Setup 6 to compile the Windows Installer.")
+        return
+
+    print(f"Compiling Windows Installer using {iscc}...")
+    res = subprocess.run([iscc, str(iss_file)], cwd=str(BASE_DIR))
+    if res.returncode != 0:
+        print(f"ISCC compilation failed with exit code {res.returncode}")
+    else:
+        print("Windows Installer compiled successfully.")
+
+
 if __name__ == "__main__":
     build()
+    package_portable()
+    compile_installer()
 

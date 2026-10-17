@@ -327,6 +327,31 @@ body {
 }
 .fx-btn-ghost-danger:hover { background-color: rgba(170, 24, 44, 0.12) !important; }
 
+.fx-btn-cancel {
+  background-color: transparent !important;
+  color: var(--fx-text-primary) !important;
+  border: 1px solid var(--fx-border-button) !important;
+  border-radius: 2px !important;
+  height: 34px !important;
+  font-family: var(--font-oswald) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.6px !important;
+  box-shadow: none !important;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.fx-btn-cancel * {
+  color: inherit !important;
+}
+.fx-btn-cancel:hover {
+  background-color: rgba(170, 24, 44, 0.25) !important;
+  border-color: var(--fx-crimson) !important;
+  color: #FFFFFF !important;
+}
+.fx-btn-cancel:hover * {
+  color: #FFFFFF !important;
+}
+
 
 /* ==========================================================================
    7. INPUTS  (path field, search field - outlined, 2px radius)

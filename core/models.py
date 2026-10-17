@@ -71,3 +71,7 @@ class AudioTrack:
     
     # Destination transformation
     target_path: str = ""
+
+    # Duplicate tracking
+    is_duplicate: bool = False
+    duplicate_group_id: Optional[str] = None

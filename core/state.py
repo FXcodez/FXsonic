@@ -8,11 +8,12 @@ next item boundary, kills any live ``fpcalc`` process and resets the workbench.
 
 import asyncio
 import os
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Any
 from . import control
 from .control import AbortController, OperationAborted
 from .models import AudioTrack, TrackStatus, TrackMetadata, ProposedMetadata
@@ -21,7 +22,7 @@ from .tagger import read_track_metadata, write_track_metadata, extract_current_a
 from .resolver import resolve_track, resolve_album_consensus, sanitize_metadata_text
 from .router import compute_destination_path
 
-AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aiff"}
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".aiff"}
 
 #: Parallel readers used while staging a folder (mutagen reads are I/O bound).
 STAGING_WORKERS = 8
@@ -70,6 +71,9 @@ class FXsonicState:
         self.search_filter: str = ""
         self.status_filter: str = "ALL"  # ALL, VERIFIED, AMBIGUOUS, UNMATCHED
         self.sort_key: str = "file_name"
+        self.sort_ascending: bool = True
+        self.select_by_mode: str = "None"  # None, Artist, Album, Folder, Status
+        self.active_context_filter: Optional[str] = None
 
         # Scanning / Processing Task State
         #
@@ -134,7 +138,12 @@ class FXsonicState:
         self.status_message = msg
         if self.on_log_message:
             self.on_log_message(msg)
-        self.notify()
+        if self.is_scanning or self.is_applying:
+            # During batch execution, update the status footer ticker without
+            # triggering synchronous, heavy table rebuilds on every single line.
+            self.notify_progress()
+        else:
+            self.notify()
 
     def report_progress(self, value: float, phase: str = "", refresh: bool = True) -> None:
         """Publish pipeline progress (0.0 - 1.0) plus a phase label for the footer.
@@ -222,6 +231,18 @@ class FXsonicState:
         elif self.status_filter == "UNMATCHED":
             results = [t for t in results if t.status in (TrackStatus.UNMATCHED, TrackStatus.STAGED, TrackStatus.UNVERIFIED)]
 
+        # Contextual filter (Select By)
+        if self.active_context_filter and self.select_by_mode != "None":
+            ctx = self.active_context_filter.strip().lower()
+            if self.select_by_mode == "Artist":
+                results = [t for t in results if (t.proposed.artist or t.current.artist or "").strip().lower() == ctx]
+            elif self.select_by_mode == "Album":
+                results = [t for t in results if (t.proposed.album or t.current.album or "").strip().lower() == ctx]
+            elif self.select_by_mode == "Folder":
+                results = [t for t in results if str(Path(t.file_path).parent).lower() == ctx]
+            elif self.select_by_mode == "Status":
+                results = [t for t in results if t.status.value.lower() == ctx]
+
         # Filter by text search
         query = self.search_filter.strip().lower()
         if query:
@@ -235,15 +256,32 @@ class FXsonicState:
                     filtered.append(t)
             results = filtered
 
+        # Helper for numeric sorting
+        def _num_or_zero(s: Any) -> int:
+            try:
+                digits = re.search(r"\d+", str(s or ""))
+                return int(digits.group(0)) if digits else 0
+            except Exception:
+                return 0
+
         # Sort
+        reverse = not self.sort_ascending
         if self.sort_key == "file_name":
-            results = sorted(results, key=lambda x: x.file_name.lower())
+            results = sorted(results, key=lambda x: x.file_name.lower(), reverse=reverse)
         elif self.sort_key == "title":
-            results = sorted(results, key=lambda x: (x.proposed.title or x.current.title).lower())
+            results = sorted(results, key=lambda x: (x.proposed.title or x.current.title or x.file_name).lower(), reverse=reverse)
         elif self.sort_key == "artist":
-            results = sorted(results, key=lambda x: (x.proposed.artist or x.current.artist).lower())
+            results = sorted(results, key=lambda x: (x.proposed.artist or x.current.artist or "").lower(), reverse=reverse)
+        elif self.sort_key == "album":
+            results = sorted(results, key=lambda x: (x.proposed.album or x.current.album or "").lower(), reverse=reverse)
+        elif self.sort_key == "year":
+            results = sorted(results, key=lambda x: (_num_or_zero(x.proposed.year or x.current.year), _num_or_zero(x.proposed.track_number or x.current.track_number)), reverse=reverse)
+        elif self.sort_key == "status":
+            results = sorted(results, key=lambda x: x.status.value, reverse=reverse)
         elif self.sort_key == "score":
-            results = sorted(results, key=lambda x: x.proposed.score, reverse=True)
+            results = sorted(results, key=lambda x: x.proposed.score, reverse=not reverse)
+        elif self.sort_key == "id":
+            results = sorted(results, key=lambda x: int(x.id) if x.id.isdigit() else x.id, reverse=reverse)
 
         return results
 
@@ -280,52 +318,76 @@ class FXsonicState:
                 t.target_path = str(info.with_name(f"{info.stem} ({count}){info.suffix}"))
 
     async def intake_directory(self, folder_path: str = ""):
+        """Backward-compatible intake for a single folder."""
+        await self.intake_paths([folder_path] if folder_path else [], append=False)
+
+    async def intake_paths(self, paths: List[str], append: bool = False):
         """
-        Instant local intake scan of all audio files in the folder (no network calls).
-        Extracts Mutagen ID3 tags in memory and stages tracks with STAGED status.
+        Intake scan of one or multiple folders and audio files.
+        If append is True (e.g. Ctrl + Drag & Drop), appends new tracks to the active workbench
+        without clearing existing tracks or creating duplicates.
+        Extracts Mutagen metadata in memory and stages tracks.
         """
-        if folder_path:
-            self.source_directory = folder_path
-
-        # A drop can be delivered to more than one listener, and each delivery starts a
-        # load.  The first one owns the staging table (and the Inspector), so an
-        # identical load that is already running makes this delivery a no-op - clearing
-        # the table here would wipe the rows the loader is about to publish.
-        if self._intake_inflight and self._intake_inflight == self.source_directory:
-            diag(f"[Staging] Ignoring duplicate load for {self.source_directory}")
-            return
-
-        self.tracks.clear()
-        self.tracks_by_id.clear()
-        self.selected_track_id = None
-        self.album_cover_art = None
-        self.album_cover_mime = "image/jpeg"
-        self.progress_val = 0.0
-        self.search_filter = ""
-        self.status_filter = "ALL"
-
-        if not self.source_directory or not Path(self.source_directory).exists():
+        valid_paths = [p for p in (paths or []) if p and Path(p).exists()]
+        if not valid_paths and not append:
+            self.tracks.clear()
+            self.tracks_by_id.clear()
+            self.selected_track_id = None
+            self.source_directory = ""
             self.refresh_destination_paths()
             self.update_metrics()
             self.status_message = "READY"
             self.notify()
             return
 
-        src_path = Path(self.source_directory)
-        if not src_path.is_dir():
-            self.refresh_destination_paths()
-            self.update_metrics()
-            self.status_message = "READY"
-            self.notify()
+        if not valid_paths:
             return
+
+        if len(valid_paths) == 1 and Path(valid_paths[0]).is_dir():
+            if not append or not self.source_directory:
+                self.source_directory = valid_paths[0]
+        elif not append:
+            self.source_directory = f"{len(valid_paths)} folders/items staged"
+
+        # Check duplicate inflight load
+        inflight_key = "|".join(sorted(valid_paths))
+        if self._intake_inflight and self._intake_inflight == inflight_key:
+            diag(f"[Staging] Ignoring duplicate load for {inflight_key}")
+            return
+
+        existing_norm_paths = set()
+        if not append:
+            self.tracks.clear()
+            self.tracks_by_id.clear()
+            self.selected_track_id = None
+            self.album_cover_art = None
+            self.album_cover_mime = "image/jpeg"
+            self.progress_val = 0.0
+            self.search_filter = ""
+            self.status_filter = "ALL"
+            self.active_context_filter = None
+            start_index = 0
+        else:
+            existing_norm_paths = {os.path.normcase(t.file_path) for t in self.tracks}
+            start_index = len(self.tracks)
 
         found_files: List[Path] = []
         try:
-            for root, _, files in os.walk(src_path):
-                for f in files:
-                    p = Path(root) / f
-                    if p.suffix.lower() == ".mp3":
-                        found_files.append(p)
+            for item in valid_paths:
+                p_item = Path(item)
+                if p_item.is_dir():
+                    for root, _, files in os.walk(p_item):
+                        for f in files:
+                            p = Path(root) / f
+                            if p.suffix.lower() in AUDIO_EXTENSIONS:
+                                if os.path.normcase(str(p)) not in existing_norm_paths:
+                                    found_files.append(p)
+                                    existing_norm_paths.add(os.path.normcase(str(p)))
+                elif p_item.is_file():
+                    if p_item.suffix.lower() in AUDIO_EXTENSIONS:
+                        if os.path.normcase(str(p_item)) not in existing_norm_paths:
+                            found_files.append(p_item)
+                            existing_norm_paths.add(os.path.normcase(str(p_item)))
         except Exception as e:
             self.log(f"Error enumerating files: {e}")
             self.refresh_destination_paths()
@@ -334,52 +396,44 @@ class FXsonicState:
             return
 
         if not found_files:
-            self.refresh_destination_paths()
-            self.update_metrics()
-            self.status_message = "READY"
-            self.log(f"Scan complete: No .mp3 files found in {self.source_directory}.")
-            self.notify()
+            if not append:
+                self.refresh_destination_paths()
+                self.update_metrics()
+                self.status_message = "READY"
+                self.log(f"Scan complete: No compatible audio files found in {valid_paths}.")
+                self.notify()
+            else:
+                self.log("Scan complete: No new audio files to add.")
             return
 
-        found_files.sort(key=lambda p: p.name.lower())
+        found_files.sort(key=lambda p: (p.parent, p.name.lower()))
 
-        # A fresh load starts with a fresh, armed token, and becomes the only load
-        # allowed to stage rows (a second load can start while an earlier folder is
-        # still being read).  A running scan/apply keeps its own token - dropping a new
-        # folder must not disarm the CANCEL button for the work already in flight.
         if not self.is_scanning and not self.is_applying:
             self.abort.reset()
         self._intake_generation += 1
         generation = self._intake_generation
-        staging_dir = self.source_directory
-        self._intake_inflight = staging_dir
+        self._intake_inflight = inflight_key
 
         def _superseded() -> bool:
-            return generation != self._intake_generation or self.source_directory != staging_dir
+            return generation != self._intake_generation
 
-        # Staging is local-only, but on a large folder the per-file mutagen reads add
-        # up, so they run on a small pool (order preserved, so the numeric track ids the
-        # whole UI relies on stay identical).  Typical albums are still read in a single
-        # synchronous pass - no yield point, so two deliveries of the same drop can
-        # never interleave into a doubled table - while genuinely large folders are read
-        # chunk by chunk off the event loop, so CANCEL / ABORT stays responsive.
         chunk_size = STAGING_WORKERS * 4
         pool = ThreadPoolExecutor(max_workers=STAGING_WORKERS, thread_name_prefix="fxsonic-staging")
-        index = 0
+        index = start_index
         try:
             if len(found_files) <= chunk_size:
-                paths = [str(p) for p in found_files]
-                read_meta = list(pool.map(read_track_metadata, paths))
+                file_paths_str = [str(p) for p in found_files]
+                read_meta = list(pool.map(read_track_metadata, file_paths_str))
                 index = self._stage_tracks(found_files, read_meta, index)
             else:
                 for start in range(0, len(found_files), chunk_size):
                     if self.abort.is_aborted or _superseded():
                         break
                     batch = found_files[start:start + chunk_size]
-                    paths = [str(p) for p in batch]
+                    batch_str = [str(p) for p in batch]
                     try:
                         read_meta = await asyncio.to_thread(
-                            lambda p=paths: list(pool.map(read_track_metadata, p))
+                            lambda p=batch_str: list(pool.map(read_track_metadata, p))
                         )
                     except Exception as e:
                         self.log(f"Error reading tags: {e}")
@@ -391,22 +445,23 @@ class FXsonicState:
                     index = self._stage_tracks(batch, read_meta, index)
         finally:
             pool.shutdown(wait=False)
-            if self._intake_inflight == staging_dir:
+            if self._intake_inflight == inflight_key:
                 self._intake_inflight = ""
 
         if _superseded():
-            # A newer load took over while this one was reading; leave its state alone.
             return
 
-        if self.tracks:
+        if self.tracks and not self.selected_track_id:
             self.selected_track_id = self.tracks[0].id
 
         self.refresh_destination_paths()
         self.update_metrics()
-        # Routed through log() so the staging event reaches the diagnostic sink as
-        # well: a windowed build has no console, so the log file is the only record.
+
+        added_count = len(found_files)
         if self.abort.is_aborted:
-            self.log(f"STAGING ABORTED • {len(self.tracks)} of {len(found_files)} tracks staged")
+            self.log(f"STAGING ABORTED • {len(self.tracks)} tracks currently staged")
+        elif append:
+            self.log(f"ADDED • {added_count} new tracks staged (Total: {len(self.tracks)})")
         else:
             self.log(f"STAGED • {len(self.tracks)} tracks loaded locally")
 
@@ -459,6 +514,225 @@ class FXsonicState:
             self.tracks.append(track)
             self.tracks_by_id[track_id] = track
         return index
+
+    def detect_duplicates(self) -> List[List[AudioTrack]]:
+        """
+        Group tracks that appear to be duplicates based on:
+        1. Chromaprint acoustic fingerprint (if both have fingerprints, duration diff <= 2s)
+        2. Normalized (artist, title) + duration diff <= 2.5s
+        3. Normalized filename stems (stripping track numbers, version suffixes) + duration diff <= 3.5s or matching artist
+        4. Identical file size + duration diff <= 1s
+
+        Ranks tracks in each group so group[0] is the highest quality primary track to keep.
+        Marks secondary tracks with is_duplicate = True and selected = True.
+        Returns list of duplicate groups (each group has >= 2 tracks).
+        """
+        groups: List[List[AudioTrack]] = []
+        if len(self.tracks) < 2:
+            return groups
+
+        # Reset duplicate flags
+        for t in self.tracks:
+            t.is_duplicate = False
+            t.duplicate_group_id = None
+
+        def _normalize_name_stem(name: str) -> str:
+            if not name:
+                return ""
+            stem = Path(name).stem if "." in name else name
+            cleaned = re.sub(r"^\s*(?:\d+[\s._\-]+)+", "", stem)
+            cleaned = re.sub(r"\s*[\(\[](?:\d+|copy|official\s*(?:audio|video)?|audio|video|lyrics|remaster(?:ed)?|live)[\)\]]", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"[^\w\s]", " ", cleaned).lower()
+            return " ".join(cleaned.split())
+
+        def _track_quality_score(track: AudioTrack) -> float:
+            score = 0.0
+            ext = Path(track.file_path).suffix.lower()
+            if ext in {".flac", ".wav", ".aiff"}:
+                score += 1000.0
+            elif ext in {".m4a", ".aac"}:
+                score += 500.0
+            elif ext == ".mp3":
+                score += 200.0
+            score += min(float(track.file_size or 0) / (1024.0 * 1024.0), 100.0)
+            curr, prop = track.current, track.proposed
+            if prop.title or curr.title:
+                score += 10.0
+            if prop.artist or curr.artist:
+                score += 10.0
+            if prop.album or curr.album:
+                score += 10.0
+            if prop.artwork_data or curr.has_artwork:
+                score += 15.0
+            return score
+
+        visited = set()
+        group_idx = 0
+
+        for i, t1 in enumerate(self.tracks):
+            if t1.id in visited:
+                continue
+            group = [t1]
+            dur1 = float(t1.duration or 0.0)
+            art1 = (t1.proposed.artist or t1.current.artist or "").strip().lower()
+            title1 = (t1.proposed.title or t1.current.title or Path(t1.file_name).stem).strip().lower()
+            stem1 = _normalize_name_stem(t1.file_name)
+            title1_norm = _normalize_name_stem(title1)
+
+            for j in range(i + 1, len(self.tracks)):
+                t2 = self.tracks[j]
+                if t2.id in visited:
+                    continue
+                dur2 = float(t2.duration or 0.0)
+                dur_diff = abs(dur1 - dur2) if dur1 > 0 and dur2 > 0 else 0.0
+                art2 = (t2.proposed.artist or t2.current.artist or "").strip().lower()
+                title2 = (t2.proposed.title or t2.current.title or Path(t2.file_name).stem).strip().lower()
+                stem2 = _normalize_name_stem(t2.file_name)
+                title2_norm = _normalize_name_stem(title2)
+
+                is_dup = False
+                # 1. Fingerprint match
+                if t1.fingerprint and t2.fingerprint and t1.fingerprint == t2.fingerprint and dur_diff <= 2.0:
+                    is_dup = True
+                # 2. Exact Artist & Title & Duration match
+                elif art1 and title1 and art1 == art2 and title1 == title2 and dur_diff <= 2.5:
+                    is_dup = True
+                # 3. Normalized filename stem match (across albums)
+                elif stem1 and stem2 and stem1 == stem2 and len(stem1) >= 3 and (
+                    (dur1 > 0 and dur2 > 0 and dur_diff <= 3.5)
+                    or (art1 and art2 and art1 == art2)
+                    or (t1.file_size > 0 and t1.file_size == t2.file_size)
+                ):
+                    is_dup = True
+                # 4. Normalized title match with duration match
+                elif title1_norm and title2_norm and title1_norm == title2_norm and len(title1_norm) >= 3 and (
+                    (dur1 > 0 and dur2 > 0 and dur_diff <= 3.0)
+                    or (art1 and art2 and art1 == art2)
+                ):
+                    is_dup = True
+                # 5. File size match and identical stem
+                elif t1.file_size > 0 and t1.file_size == t2.file_size and Path(t1.file_name).stem.lower() == Path(t2.file_name).stem.lower():
+                    is_dup = True
+
+                if is_dup:
+                    group.append(t2)
+                    visited.add(t2.id)
+
+            if len(group) > 1:
+                group.sort(key=_track_quality_score, reverse=True)
+                group_idx += 1
+                gid = f"DUP-{group_idx}"
+                visited.add(group[0].id)
+                group[0].duplicate_group_id = gid
+                group[0].is_duplicate = False
+                for secondary in group[1:]:
+                    secondary.is_duplicate = True
+                    secondary.duplicate_group_id = gid
+                    secondary.selected = True
+                groups.append(group)
+
+        return groups
+
+    def unstage_tracks(self, track_ids: List[str]):
+        """Remove tracks from the active workbench by track ID (does not touch files on disk)."""
+        to_remove = set(track_ids)
+        if not to_remove:
+            return
+        self.tracks = [t for t in self.tracks if t.id not in to_remove]
+        self.tracks_by_id = {t.id: t for t in self.tracks}
+        if self.selected_track_id in to_remove:
+            self.selected_track_id = self.tracks[0].id if self.tracks else None
+        self.refresh_destination_paths()
+        self.update_metrics()
+        self.notify()
+
+    def combine_albums(self, track_ids: List[str], target_album_name: str):
+        """Standardize proposed album name across selected tracks to merge into a single album."""
+        target_ids = set(track_ids)
+        if not target_ids or not target_album_name:
+            return
+        for t in self.tracks:
+            if t.id in target_ids:
+                t.proposed.album = target_album_name
+        self.refresh_destination_paths()
+        self.notify()
+
+    def consolidate_duplicates_to_album(self, groups: List[List[AudioTrack]], target_album_name: str):
+        """
+        Consolidates library into a single target album with UNIQUE files:
+        1. Keeps only the primary (best quality) track for each duplicate group and unstages secondary copies.
+        2. Assigns target_album_name to all remaining unique tracks.
+        """
+        if not target_album_name:
+            return
+        secondary_ids = [t.id for g in groups for t in g[1:]]
+        to_remove = set(secondary_ids)
+
+        self.tracks = [t for t in self.tracks if t.id not in to_remove]
+        self.tracks_by_id = {t.id: t for t in self.tracks}
+        if self.selected_track_id in to_remove:
+            self.selected_track_id = self.tracks[0].id if self.tracks else None
+
+        for t in self.tracks:
+            t.proposed.album = target_album_name
+
+        self.refresh_destination_paths()
+        self.update_metrics()
+        self.notify()
+
+    def get_album_tracks_for(self, track: Optional[AudioTrack] = None) -> List[AudioTrack]:
+        """
+        Returns the subset of staged tracks belonging to the same album or folder as ``track``.
+        If multiple folders or albums are staged, this ensures album-level actions
+        (Edit Album, Replace Album Art, Copy Art to Album) only affect the specific album,
+        not the entire staging library.
+        """
+        if not self.tracks:
+            return []
+
+        if track is None:
+            if self.selected_track_id and self.selected_track_id in self.tracks_by_id:
+                track = self.tracks_by_id[self.selected_track_id]
+            else:
+                track = self.tracks[0]
+
+        # 1. If user has an active album context filter (SELECT BY: Album), respect that
+        if self.select_by_mode == "Album" and self.active_context_filter:
+            filter_album = self.active_context_filter.strip().lower()
+            filtered = [
+                t for t in self.tracks
+                if (t.proposed.album or t.current.album or "").strip().lower() == filter_album
+            ]
+            if filtered:
+                return filtered
+        elif self.select_by_mode == "Folder" and self.active_context_filter:
+            filter_folder = os.path.normcase(self.active_context_filter.strip().lower())
+            filtered = [
+                t for t in self.tracks
+                if os.path.normcase(str(Path(t.file_path).parent).lower()) == filter_folder
+            ]
+            if filtered:
+                return filtered
+
+        track_dir = os.path.normcase(str(Path(track.file_path).parent))
+        track_album = (track.proposed.album or track.current.album or "").strip().lower()
+
+        # 2. Check if tracks match by album tag or by parent directory
+        generic_names = {"unknown", "unknown album", "untitled", ""}
+        if track_album and track_album not in generic_names:
+            matched_tracks = [
+                t for t in self.tracks
+                if (t.proposed.album or t.current.album or "").strip().lower() == track_album
+            ]
+            if matched_tracks:
+                return matched_tracks
+
+        # Otherwise match by parent folder
+        matched_tracks = [
+            t for t in self.tracks
+            if os.path.normcase(str(Path(t.file_path).parent)) == track_dir
+        ]
+        return matched_tracks if matched_tracks else [track]
 
     async def process_album(self):
         """
@@ -516,6 +790,10 @@ class FXsonicState:
         self.refresh_destination_paths()
         self.update_metrics()
         self.progress_val = 1.0
+        if "fingerprint" in self.progress_phase.lower():
+            self.progress_phase = "Fingerprinting Complete"
+        else:
+            self.progress_phase = "Identification Complete"
         self.log(
             f"PROCESS COMPLETED • {self.count_verified} Identified • "
             f"{self.count_ambiguous} Ambiguous • {self.count_unmatched} Unmatched"
@@ -645,6 +923,7 @@ class FXsonicState:
         self.update_metrics()
         self.refresh_destination_paths()
         self.progress_val = 1.0
+        self.progress_phase = "Apply Complete"
         if failures:
             self.log(
                 f"APPLY CHANGES COMPLETED • {written_count} file(s) written • {failures} error(s)."

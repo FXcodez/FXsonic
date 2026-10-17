@@ -25,6 +25,7 @@ import acoustid
 
 from .control import AbortController, OperationAborted, resolve as resolve_abort
 from .hidden_process import run_hidden
+from .cache import get_cached_fingerprint, store_cached_fingerprint
 
 #: Give up on a single fpcalc invocation after this many seconds.
 FPCALC_TIMEOUT_SECONDS = 120.0
@@ -170,6 +171,18 @@ def compute_audio_fingerprint(
     if token is not None:
         token.check()
 
+    # Check persistent cache first
+    path_obj = Path(file_path)
+    file_stat = None
+    try:
+        if path_obj.exists():
+            file_stat = path_obj.stat()
+            cached = get_cached_fingerprint(str(path_obj.resolve()), file_stat.st_mtime, file_stat.st_size)
+            if cached:
+                return cached
+    except Exception:
+        pass
+
     command = [str(fpcalc), "-json", "-length", str(int(max_length)), str(file_path)]
     run_kwargs: Dict[str, object] = {
         "capture_output": True,
@@ -201,6 +214,13 @@ def compute_audio_fingerprint(
     duration, fingerprint = parse_fpcalc_output(completed.stdout or "")
     if isinstance(fingerprint, bytes):  # defensive: older tooling returned bytes
         fingerprint = fingerprint.decode("utf-8", errors="replace")
+
+    if file_stat is not None and fingerprint:
+        try:
+            store_cached_fingerprint(str(path_obj.resolve()), file_stat.st_mtime, file_stat.st_size, duration, fingerprint)
+        except Exception:
+            pass
+
     return duration, fingerprint
 
 

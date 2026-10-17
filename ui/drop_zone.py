@@ -117,6 +117,7 @@ _JS_DROP = """(e) => {
         e.currentTarget.classList.remove('%s');
     }
     const dt = e.dataTransfer;
+    const isCtrl = !!(e.ctrlKey || e.metaKey);
     const files = (dt && dt.files) ? dt.files : null;
     let hint = '';
     let hasHostBridge = false;
@@ -136,13 +137,7 @@ _JS_DROP = """(e) => {
             console.error('FXsonic: failed to forward dropped files to the host', err);
         }
     }
-    if (hasHostBridge) {
-        // A real path is on its way through the native bridge; the page hint is
-        // only a folder name, so sending it would just add noise.
-        emit(JSON.stringify({ path: '', native: true }));
-    } else {
-        emit(JSON.stringify({ path: hint, native: false }));
-    }
+    emit(JSON.stringify({ path: hint, native: hasHostBridge, ctrlKey: isCtrl }));
 }""" % DROP_ACTIVE_CLASS
 
 _native_bridge_ready = False
@@ -192,11 +187,7 @@ def ensure_native_bridge() -> None:
 
 
 def _as_directory(candidate: Any) -> Optional[str]:
-    """Normalise ``candidate`` to an absolute existing directory.
-
-    Files resolve to the directory that contains them (dropping a single track is
-    a natural way of saying "load the folder it lives in").
-    """
+    """Normalise ``candidate`` to an absolute existing directory or parent of existing file."""
     if not candidate or not isinstance(candidate, str):
         return None
 
@@ -222,6 +213,31 @@ def _as_directory(candidate: Any) -> Optional[str]:
     return None
 
 
+def _as_path_or_dir(candidate: Any) -> Optional[str]:
+    """Normalise ``candidate`` to an absolute existing directory or file."""
+    if not candidate or not isinstance(candidate, str):
+        return None
+
+    raw = unquote(candidate).strip().strip('"').strip()
+    if not raw:
+        return None
+
+    try:
+        path = Path(os.path.expandvars(os.path.expanduser(raw)))
+    except Exception:
+        return None
+
+    if not path.is_absolute():
+        path = Path.cwd() / path
+
+    try:
+        if path.is_dir() or path.is_file():
+            return str(path)
+    except OSError:
+        return None
+    return None
+
+
 def payload_reports_host_bridge(payload: str) -> bool:
     """True when the page says it handed the drop to the WebView2 host."""
     stripped = (payload or "").strip()
@@ -235,15 +251,7 @@ def payload_reports_host_bridge(payload: str) -> bool:
 
 
 def resolve_dropped_folder(payload: str = "") -> Optional[str]:
-    """Resolve a *page-supplied* drop payload into an absolute folder path.
-
-    Only used when the page has no WebView2 host bridge (i.e. a plain browser):
-    with a host bridge the page reports ``native: true`` and no path at all,
-    because the real one travels through :func:`apply_native_entries` instead.
-
-    :param payload: the JSON (or bare path) string emitted by the drop handler
-    :return: absolute directory path, or ``None`` when the drop is not usable
-    """
+    """Resolve a *page-supplied* drop payload into an absolute folder path."""
     if payload_reports_host_bridge(payload):
         return None
 
@@ -260,8 +268,9 @@ def resolve_dropped_folder(payload: str = "") -> Optional[str]:
     return _as_directory(hint)
 
 
-def resolve_native_entries(entries: Sequence[Any]) -> Optional[str]:
-    """Return the first entry that resolves to an existing directory."""
+def resolve_all_native_entries(entries: Sequence[Any]) -> List[str]:
+    """Return all entries that resolve to existing directories or files."""
+    resolved = []
     for entry in entries or []:
         candidate: Any = None
         if isinstance(entry, dict):
@@ -271,10 +280,16 @@ def resolve_native_entries(entries: Sequence[Any]) -> Optional[str]:
         elif isinstance(entry, str):
             candidate = entry
 
-        folder = _as_directory(candidate)
-        if folder:
-            return folder
-    return None
+        folder = _as_path_or_dir(candidate)
+        if folder and folder not in resolved:
+            resolved.append(folder)
+    return resolved
+
+
+def resolve_native_entries(entries: Sequence[Any]) -> Optional[str]:
+    """Return the first entry that resolves to an existing directory."""
+    all_res = resolve_all_native_entries(entries)
+    return all_res[0] if all_res else None
 
 
 def harvest_native_entries(state: Optional[dict]) -> List[dict]:
@@ -333,40 +348,66 @@ def _live_workbenches() -> List[dict]:
     return live
 
 
-async def _invoke(callback: Callable[[str], Any], folder: str) -> None:
-    result = callback(folder)
+_last_drop_ctrl: bool = False
+_last_drop_time: float = 0.0
+
+
+async def _invoke(callback: Callable[..., Any], folder_or_paths: Any, append: bool = False) -> None:
+    try:
+        import inspect
+        sig = inspect.signature(callback)
+        if len(sig.parameters) >= 2 or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            result = callback(folder_or_paths, append=append)
+        else:
+            result = callback(folder_or_paths)
+    except Exception:
+        result = callback(folder_or_paths)
+
     if asyncio.iscoroutine(result):
         await result
 
 
-async def apply_dropped_folder(folder: str) -> int:
-    """Load ``folder`` into every live workbench; returns how many were updated."""
+async def apply_dropped_paths(paths: Sequence[str], append: bool = False) -> int:
+    """Load ``paths`` (directories or files) into every live workbench; returns how many were updated."""
     applied = 0
+    clean_paths = [str(p) for p in paths if p]
     for wb in _live_workbenches():
-        await _invoke(wb["on_folder_drop"], folder)
+        await _invoke(wb["on_folder_drop"], clean_paths, append=append)
         applied += 1
     return applied
 
 
-async def apply_native_entries(entries: Sequence[Any]) -> Optional[str]:
-    """Resolve forwarded native entries and stage the first real folder."""
-    folder = resolve_native_entries(entries)
-    if not folder:
+async def apply_dropped_folder(folder: str, append: bool = False) -> int:
+    """Load ``folder`` into every live workbench; returns how many were updated."""
+    return await apply_dropped_paths([folder], append=append)
+
+
+async def apply_native_entries(entries: Sequence[Any], append: Optional[bool] = None) -> List[str]:
+    """Resolve forwarded native entries and stage all real folders and files."""
+    global _last_drop_ctrl, _last_drop_time
+    if append is None:
+        if (time.monotonic() - _last_drop_time) < 3.0:
+            append = _last_drop_ctrl
+        else:
+            append = False
+
+    paths = resolve_all_native_entries(entries)
+    if not paths:
         for wb in _live_workbenches():
             try:
-                wb["state"].log(f"DROP IGNORED • no folder found in {list(entries)!r}")
+                wb["state"].log(f"DROP IGNORED • no compatible items found in {list(entries)!r}")
             except Exception:
                 pass
-        return None
-    await apply_dropped_folder(folder)
-    return folder
+        return []
+    await apply_dropped_paths(paths, append=append)
+    return paths
 
 
 _endpoint_installed = False
 
 
 def install_native_drop_endpoint(app_instance: Any, route: str = NATIVE_DROP_ROUTE) -> None:
-    """Expose ``route`` so the window process can hand over a dropped folder.
+    """Expose ``route`` so the window process can hand over dropped files/folders.
 
     Registered in both processes (only the server's instance is reachable), and
     only once per process.
@@ -385,8 +426,8 @@ def install_native_drop_endpoint(app_instance: Any, route: str = NATIVE_DROP_ROU
         except Exception:
             payload = {}
         entries = (payload or {}).get("paths") or []
-        folder = await apply_native_entries(entries)
-        return {"ok": bool(folder), "folder": folder}
+        paths = await apply_native_entries(entries)
+        return {"ok": bool(paths), "paths": paths, "folder": paths[0] if paths else None}
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +674,7 @@ def attach_folder_drop_zone(
         drop_js = drop_js.replace(DROP_ACTIVE_CLASS, active_class)
 
     async def _on_drop_event(e) -> None:
+        global _last_drop_ctrl, _last_drop_time
         args = getattr(e, "args", None)
         payload = ""
         if isinstance(args, (list, tuple)) and args:
@@ -640,16 +682,26 @@ def attach_folder_drop_zone(
         elif isinstance(args, str):
             payload = args
 
+        ctrl_pressed = False
+        try:
+            if payload.strip().startswith("{"):
+                d = json.loads(payload)
+                ctrl_pressed = bool(d.get("ctrlKey"))
+        except Exception:
+            pass
+
+        _last_drop_ctrl = ctrl_pressed
+        _last_drop_time = time.monotonic()
+
         if payload_reports_host_bridge(payload):
             # The page handed the files to WebView2; the window process owns the
             # real paths and forwards them (see start_native_drop_forwarder).
-            diag("[FXsonic] drop received in the page -> waiting for the native "
-                 "folder bridge")
+            diag(f"[FXsonic] drop received in the page (ctrl={ctrl_pressed}) -> waiting for the native folder bridge")
             return
 
         folder = resolve_dropped_folder(payload)
         if folder:
-            await _invoke(on_drop, folder)
+            await apply_dropped_paths([folder], append=ctrl_pressed)
 
     element.on("dragenter", js_handler=drag_over)
     element.on("dragover", js_handler=drag_over)
@@ -663,6 +715,7 @@ __all__ = [
     "DROP_ACTIVE_CLASS",
     "NATIVE_DROP_ROUTE",
     "apply_dropped_folder",
+    "apply_dropped_paths",
     "apply_native_entries",
     "attach_folder_drop_zone",
     "collect_new_entries",
@@ -672,6 +725,7 @@ __all__ = [
     "payload_reports_host_bridge",
     "post_native_entries",
     "register_workbench",
+    "resolve_all_native_entries",
     "resolve_dropped_folder",
     "resolve_native_entries",
     "server_base_url_candidates",
